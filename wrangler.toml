@@ -1,3 +1,7 @@
 name = "anon-inbox"
 main = "worker.js"
 compatibility_date = "2025-01-01"
+keep_vars = true
+
+[vars]
+REPO_URL = "https://github.com/NotPouria/telegram-secretline-bot"
