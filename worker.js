@@ -147,7 +147,7 @@ async function handleMessage(msg, token, adminId, repoUrl) {
     const welcomeText = isAdmin
       ? "👋 <b>Counselor Admin Mode Active!</b>\n\nWhenever a student sends a message, it will appear here with a short thread alias (e.g., <code>#a4f9c2</code>).\nSimply <b>swipe to reply</b> on any student message to deliver your answer back to them."
       : "سلام! 👋 به <b>صندوق پیام ناشناس مشاور</b> خوش اومدی. 🌱\n\n" +
-        "برخلاف صندوق‌های قدیمی توی راهروی مدرسه که زیر دوربینن و هیچ راهی هم برای جواب دادن ندارن، اینجا یه فضای کاملاً امن و دوطرفه‌ست!\n\n" +
+        "برخلاف صندوق‌های قدیمی که وسط راهروی مدرسه و زیر دوربینن هستن و عملا هیچ راه بدرد بخوری هم برای جواب دادن ندارن، اینجا یه فضای کاملاً امن و دوطرفه‌ست!\n\n" +
         "هر دغدغه، سوال، درد دل یا پیشنهادی داری، می‌تونی همین‌جا به صورت <b>متن، عکس یا حتی ویس</b> بفرستی:\n" +
         "🔹 نام، یوزرنیم و پروفایل تلگرامت <b>به هیچ وجه</b> برای من قابل دیدن نیست.\n" +
         "🔹 وقتی جوابت رو بدم، همین‌جا برات ارسال میشه و می‌تونیم بدون اینکه هویتت مشخص بشه با هم گفتگو کنیم.\n\n" +
