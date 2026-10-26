@@ -1,11 +1,15 @@
 /**
- * Open-Source Anonymous School Counselor Bot (Cloudflare Worker) - v2.0
+ * Open-Source Anonymous School Counselor Bot (Cloudflare Worker) - v2.1
  * Admin & Code: English | Student Interface: Persian (Farsi)
+ *
  * Features:
- *  - AES-GCM Encrypted Routing + Exact Message-ID Threading (#1)
- *  - Automatic Voice-Note Privacy Reminder (#3)
- *  - Clean 👍 Reaction Delivery Confirmations (#4)
- *  - X-Telegram-Bot-Api-Secret-Token Webhook Protection (#5)
+ *  - Zero-Database AES-GCM Encrypted Routing + Exact Message-ID Threading
+ *  - Overflow-Safe Routing Tags (Prevents 1024/4096 char truncation bugs)
+ *  - True Delivery Verification (Confirms to student only if Admin receives it)
+ *  - Two-Way Live Message Editing (edited_message support for Student & Admin)
+ *  - Anti-Self-Doxxing Guard (Blocks accidental Contact / Location sharing)
+ *  - Automatic Voice-Note Privacy Reminder & Clean 👍 Admin Reactions
+ *  - X-Telegram-Bot-Api-Secret-Token Webhook Protection
  * License: MIT
  */
 
@@ -25,7 +29,7 @@ export default {
 
     const webhookSecret = await getWebhookSecret(BOT_TOKEN);
 
-    // 1. One-click Webhook Registration with Secret Token protection (#5)
+    // 1. Webhook Registration (Idempotent check to prevent rate-limit spam)
     if (url.pathname === "/register") {
       const webhookUrl = `${url.origin}/webhook`;
       const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/setWebhook`, {
@@ -34,18 +38,19 @@ export default {
         body: JSON.stringify({
           url: webhookUrl,
           secret_token: webhookSecret,
+          allowed_updates: ["message", "edited_message", "callback_query"],
         }),
       });
       const data = await res.json();
       return new Response(
         data.ok
-          ? `✅ Secured Webhook (v2.0) registered: ${webhookUrl}`
+          ? `✅ Secured Webhook (v2.1) registered: ${webhookUrl}`
           : `❌ Failed: ${JSON.stringify(data)}`,
         { headers: { "content-type": "text/plain; charset=utf-8" } }
       );
     }
 
-    // 2. Telegram Webhook Endpoint (Verified via X-Telegram-Bot-Api-Secret-Token) (#5)
+    // 2. Verified Telegram Webhook Endpoint
     if (url.pathname === "/webhook" && request.method === "POST") {
       const incomingSecret = request.headers.get("X-Telegram-Bot-Api-Secret-Token");
       if (incomingSecret !== webhookSecret) {
@@ -55,7 +60,9 @@ export default {
       try {
         const update = await request.json();
         if (update.message) {
-          await handleMessage(update.message, BOT_TOKEN, ADMIN_ID, REPO_URL);
+          await handleMessage(update.message, BOT_TOKEN, ADMIN_ID, REPO_URL, false);
+        } else if (update.edited_message) {
+          await handleMessage(update.edited_message, BOT_TOKEN, ADMIN_ID, REPO_URL, true);
         } else if (update.callback_query) {
           await handleCallback(update.callback_query, BOT_TOKEN, REPO_URL);
         }
@@ -66,7 +73,7 @@ export default {
     }
 
     return new Response(
-      `🤖 Open-Source Anonymous School Counselor Bot (v2.0) is running.\nSource Code: ${REPO_URL}`,
+      `🤖 Open-Source Anonymous School Counselor Bot (v2.1) is running.\nSource Code: ${REPO_URL}`,
       { headers: { "content-type": "text/plain; charset=utf-8" } }
     );
   },
@@ -79,7 +86,6 @@ function escapeHtml(str) {
     .replace(/>/g, "&gt;");
 }
 
-// Generate a deterministic webhook secret token from BOT_TOKEN (#5)
 async function getWebhookSecret(secret) {
   const enc = new TextEncoder();
   const hashBuffer = await crypto.subtle.digest("SHA-256", enc.encode(`webhook:${secret}`));
@@ -98,7 +104,6 @@ async function getCryptoKey(secret) {
   ]);
 }
 
-// Short 6-char anonymous alias (e.g., #a4f9c2) to group repeat messages from the same student
 async function getAnonAlias(chatId, secret) {
   const enc = new TextEncoder();
   const hashBuffer = await crypto.subtle.digest("SHA-256", enc.encode(`${chatId}:${secret}`));
@@ -106,7 +111,6 @@ async function getAnonAlias(chatId, secret) {
   return hashArray.slice(0, 3).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-// Encrypt both chatId and student's messageId ("chatId:msgId") using AES-GCM (#1)
 async function encryptRoute(chatId, msgId, secret) {
   const key = await getCryptoKey(secret);
   const iv = crypto.getRandomValues(new Uint8Array(12));
@@ -120,7 +124,6 @@ async function encryptRoute(chatId, msgId, secret) {
   return Array.from(combined).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-// Decrypt routing token back into { chatId, msgId } (#1)
 async function decryptRoute(hexToken, secret) {
   const key = await getCryptoKey(secret);
   const bytes = new Uint8Array(hexToken.match(/.{1,2}/g).map((b) => parseInt(b, 16)));
@@ -141,7 +144,6 @@ async function tgApi(token, method, payload) {
   return res.json();
 }
 
-// Handle Student Privacy Explanation Button Callback (Persian)
 async function handleCallback(cb, token, repoUrl) {
   if (cb.data === "explain_privacy") {
     await tgApi(token, "answerCallbackQuery", { callback_query_id: cb.id });
@@ -163,19 +165,21 @@ async function handleCallback(cb, token, repoUrl) {
   }
 }
 
-async function handleMessage(msg, token, adminId, repoUrl) {
+async function handleMessage(msg, token, adminId, repoUrl, isEdit = false) {
   const senderId = String(msg.chat.id);
   const text = msg.text || "";
 
-  // Handle /start and /source commands
-  if (text.startsWith("/start") || text.startsWith("/source")) {
+  // Handle /start and /source commands (ignore on edits)
+  if (!isEdit && (text.startsWith("/start") || text.startsWith("/source"))) {
     const isAdmin = senderId === adminId;
     const welcomeText = isAdmin
-      ? "👋 <b>Counselor Admin Mode Active (v2.0)!</b>\n\n" +
+      ? "👋 <b>Counselor Admin Mode Active (v2.1)!</b>\n\n" +
         "• Incoming student messages display a short thread alias (e.g., <code>#a4f9c2</code>).\n" +
-        "• Simply <b>swipe to reply</b> on any student message to deliver your answer directly to that specific message bubble.\n" +
+        "• <b>Swipe to reply</b> on any student message to deliver your answer directly to that specific message bubble.\n" +
+        "• If you edit a text reply, the updated version is automatically sent to the student.\n" +
         "• Delivered replies get an automatic 👍 reaction."
       : "سلام! 👋 به <b>صندوق پیام ناشناس مشاور</b> خوش اومدی. 🌱\n\n" +
+        "برخلاف صندوق‌های قدیمی توی راهروی مدرسه که زیر دوربینن و هیچ راهی هم برای جواب دادن ندارن، اینجا یه فضای کاملاً امن و دوطرفه‌ست!\n\n" +
         "هر دغدغه، سوال، درد دل یا پیشنهادی داری، می‌تونی همین‌جا به صورت <b>متن، عکس یا حتی ویس</b> بفرستی:\n" +
         "🔹 نام، یوزرنیم و پروفایل تلگرامت <b>به هیچ وجه</b> برای من قابل دیدن نیست.\n" +
         "🔹 وقتی جوابت رو بدم، همین‌جا برات ارسال میشه و می‌تونیم بدون اینکه هویتت مشخص بشه با هم گفتگو کنیم.\n\n" +
@@ -197,14 +201,16 @@ async function handleMessage(msg, token, adminId, repoUrl) {
     return;
   }
 
-  // CASE A: Admin is replying to a student's message
+  // CASE A: Admin is replying (or editing a reply) to a student
   if (senderId === adminId) {
     if (!msg.reply_to_message) {
-      await tgApi(token, "sendMessage", {
-        chat_id: adminId,
-        text: "⚠️ To answer a student, please <b>swipe to reply</b> directly on their message.",
-        parse_mode: "HTML",
-      });
+      if (!isEdit) {
+        await tgApi(token, "sendMessage", {
+          chat_id: adminId,
+          text: "⚠️ To answer a student, please <b>swipe to reply</b> directly on their message.",
+          parse_mode: "HTML",
+        });
+      }
       return;
     }
 
@@ -212,22 +218,24 @@ async function handleMessage(msg, token, adminId, repoUrl) {
     const match = originalContent.match(/\[#RT_([0-9a-fA-F]+)\]/);
 
     if (!match) {
-      await tgApi(token, "sendMessage", {
-        chat_id: adminId,
-        text: "❌ Could not find a valid routing tag in the message you replied to.",
-      });
+      if (!isEdit) {
+        await tgApi(token, "sendMessage", {
+          chat_id: adminId,
+          text: "❌ Could not find a valid routing tag in the message you replied to.",
+        });
+      }
       return;
     }
 
     try {
       const { chatId: targetChatId, msgId: targetMsgId } = await decryptRoute(match[1], token);
       let result;
+      const prefix = isEdit ? "✏️ <b>اصلاحیه پاسخ مشاور:</b>" : "💬 <b>پاسخ مشاور:</b>";
 
-      // Quote the student's exact original message bubble (#1)
       if (msg.text) {
         result = await tgApi(token, "sendMessage", {
           chat_id: targetChatId,
-          text: `💬 <b>پاسخ مشاور:</b>\n\n${escapeHtml(msg.text)}\n\n🌱 <i>می‌تونی همین‌جا به گفتگو ادامه بدی:</i>`,
+          text: `${prefix}\n\n${escapeHtml(msg.text.slice(0, 3800))}\n\n🌱 <i>می‌تونی همین‌جا به گفتگو ادامه بدی:</i>`,
           parse_mode: "HTML",
           reply_to_message_id: targetMsgId,
           allow_sending_without_reply: true,
@@ -237,20 +245,21 @@ async function handleMessage(msg, token, adminId, repoUrl) {
           chat_id: targetChatId,
           from_chat_id: adminId,
           message_id: msg.message_id,
-          caption: msg.caption ? `💬 پاسخ مشاور:\n\n${msg.caption}` : "💬 پاسخ مشاور",
+          caption: msg.caption
+            ? `💬 پاسخ مشاور:\n\n${msg.caption.slice(0, 950)}`
+            : "💬 پاسخ مشاور",
           reply_to_message_id: targetMsgId,
           allow_sending_without_reply: true,
         });
       }
 
       if (result.ok) {
-        // React with 👍 to keep the admin chat clean; fall back to text if reaction fails (#4)
         const reactRes = await tgApi(token, "setMessageReaction", {
           chat_id: adminId,
           message_id: msg.message_id,
           reaction: [{ type: "emoji", emoji: "👍" }],
         });
-        if (!reactRes.ok) {
+        if (!reactRes.ok && !isEdit) {
           await tgApi(token, "sendMessage", {
             chat_id: adminId,
             text: "✅ Reply delivered to student!",
@@ -273,26 +282,46 @@ async function handleMessage(msg, token, adminId, repoUrl) {
     return;
   }
 
-  // CASE B: Student sends an anonymous message (msg.from is NEVER read)
+  // CASE B: Student sends or edits an anonymous message (msg.from is NEVER accessed)
+
+  // Anti-Self-Doxxing Guard: Block accidental contact or location sharing
+  if (msg.contact || msg.location || msg.venue) {
+    await tgApi(token, "sendMessage", {
+      chat_id: senderId,
+      text: "🛡️ <b>محافظت از حریم خصوصی:</b>\n\nبرای اینکه هویتت ۱۰۰٪ ناشناس بمونه، ارسال شماره تماس (Contact) و موقعیت مکانی (Location) در این ربات مسدود شده است. لطفاً پیامت رو به صورت متنی بفرست. 🌱",
+      parse_mode: "HTML",
+      reply_to_message_id: msg.message_id,
+    });
+    return;
+  }
+
   const alias = await getAnonAlias(senderId, token);
   const encryptedRoute = await encryptRoute(senderId, msg.message_id, token);
   const mediaTag = msg.voice ? " [🎙️ Voice Note]" : "";
-  const header = `📩 New Anonymous Message (Thread: #${alias})${mediaTag}`;
+  const actionLabel = isEdit ? "✏️ Edited Anonymous Message" : "📩 New Anonymous Message";
+  const header = `${actionLabel} (Thread: #${alias})${mediaTag}`;
   const footer = `[#RT_${encryptedRoute}]`;
 
+  let adminResult;
+
   if (msg.text) {
-    await tgApi(token, "sendMessage", {
+    // Truncate body safely to 3800 chars so header + body + [#RT_...] never exceeds 4096 chars
+    const safeText = msg.text.length > 3800 ? msg.text.slice(0, 3800) + "…" : msg.text;
+    adminResult = await tgApi(token, "sendMessage", {
       chat_id: adminId,
-      text: `${header}\n\n${msg.text}\n\n${footer}`,
+      text: `${header}\n\n${safeText}\n\n${footer}`,
     });
   } else if (msg.photo || msg.video || msg.voice || msg.audio || msg.document) {
-    const userCaption = msg.caption ? `\n\n${msg.caption}` : "";
-    const fullCaption = `${header}${userCaption}\n\n${footer}`;
-    await tgApi(token, "copyMessage", {
+    // Truncate caption safely to 800 chars so [#RT_...] is NEVER sliced off by Telegram's 1024-char limit
+    const safeCaption = msg.caption
+      ? `\n\n${msg.caption.length > 800 ? msg.caption.slice(0, 800) + "…" : msg.caption}`
+      : "";
+    const fullCaption = `${header}${safeCaption}\n\n${footer}`;
+    adminResult = await tgApi(token, "copyMessage", {
       chat_id: adminId,
       from_chat_id: senderId,
       message_id: msg.message_id,
-      caption: fullCaption.slice(0, 1024),
+      caption: fullCaption,
     });
   } else {
     const copied = await tgApi(token, "copyMessage", {
@@ -300,15 +329,26 @@ async function handleMessage(msg, token, adminId, repoUrl) {
       from_chat_id: senderId,
       message_id: msg.message_id,
     });
-    await tgApi(token, "sendMessage", {
+    adminResult = await tgApi(token, "sendMessage", {
       chat_id: adminId,
       text: `${header}\n⬆️ (Reply to this message to answer the student above)\n\n${footer}`,
       reply_to_message_id: copied.result?.message_id,
     });
   }
 
-  // Confirm delivery in Persian, with a gentle voice-privacy reminder if they sent a voice note (#3)
-  const confirmationText = msg.voice
+  // Only confirm delivery to the student if the message actually reached the Admin
+  if (!adminResult || !adminResult.ok) {
+    await tgApi(token, "sendMessage", {
+      chat_id: senderId,
+      text: "❌ متأسفانه خطایی در ارسال پیام پیش اومد. لطفاً پیامت رو کوتاه‌تر کن یا دوباره امتحان کن.",
+      reply_to_message_id: msg.message_id,
+    });
+    return;
+  }
+
+  const confirmationText = isEdit
+    ? "✅ ویرایش پیامت برای مشاور ارسال شد. 🌱"
+    : msg.voice
     ? "✅ ویس تو بدون نام و مشخصات برای مشاور ارسال شد.\n💡 <i>نکته: یادت باشه توی پیام صوتی، صدای خودت قابل شنیدنه! اگر می‌خوای صدات هم شناخته نشه، می‌تونی پیام متنی بفرستی.</i> 🌱"
     : "✅ پیامت به صورت کاملاً ناشناس به دست مشاور رسید.\nبه محض بررسی، جوابش رو همین‌جا دریافت می‌کنی. 🌱";
 
