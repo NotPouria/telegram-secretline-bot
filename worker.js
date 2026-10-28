@@ -1,15 +1,15 @@
 /**
- * Open-Source Anonymous School Counselor Bot (Cloudflare Worker) - v2.1
+ * Open-Source Anonymous School Counselor Bot (Cloudflare Worker) - v2.2
  * Admin & Code: English | Student Interface: Persian (Farsi)
  *
  * Features:
- *  - Zero-Database AES-GCM Encrypted Routing + Exact Message-ID Threading
- *  - Overflow-Safe Routing Tags (Prevents 1024/4096 char truncation bugs)
- *  - True Delivery Verification (Confirms to student only if Admin receives it)
- *  - Two-Way Live Message Editing (edited_message support for Student & Admin)
- *  - Anti-Self-Doxxing Guard (Blocks accidental Contact / Location sharing)
- *  - Automatic Voice-Note Privacy Reminder & Clean 👍 Admin Reactions
- *  - X-Telegram-Bot-Api-Secret-Token Webhook Protection
+ *  - AES-GCM Encrypted Routing + Exact Message-ID Threading (#1)
+ *  - Automatic Voice-Note Privacy Reminder (#3)
+ *  - Clean 👍 Reaction Delivery Confirmations (#4)
+ *  - X-Telegram-Bot-Api-Secret-Token Webhook Protection (#5)
+ *  - Overflow-Safe Routing Tags & True Delivery Verification
+ *  - Two-Way Live Message Editing & Anti-Self-Doxxing Guard
+ *  - Privacy-Preserving Admin Shadowban (/block, /unblock, /blocklist via KV)
  * License: MIT
  */
 
@@ -19,6 +19,7 @@ export default {
     const BOT_TOKEN = env.BOT_TOKEN;
     const ADMIN_ID = String(env.ADMIN_ID || "").trim();
     const REPO_URL = env.REPO_URL || "https://github.com/NotPouria/telegram-secretline-bot";
+    const BLOCKLIST = env.BLOCKLIST; // Optional Cloudflare KV Namespace binding
 
     if (!BOT_TOKEN || !ADMIN_ID) {
       return new Response(
@@ -29,7 +30,7 @@ export default {
 
     const webhookSecret = await getWebhookSecret(BOT_TOKEN);
 
-    // 1. Webhook Registration (Idempotent check to prevent rate-limit spam)
+    // 1. One-click Webhook Registration
     if (url.pathname === "/register") {
       const webhookUrl = `${url.origin}/webhook`;
       const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/setWebhook`, {
@@ -44,7 +45,7 @@ export default {
       const data = await res.json();
       return new Response(
         data.ok
-          ? `✅ Secured Webhook (v2.1) registered: ${webhookUrl}`
+          ? `✅ Secured Webhook (v2.2) registered: ${webhookUrl}`
           : `❌ Failed: ${JSON.stringify(data)}`,
         { headers: { "content-type": "text/plain; charset=utf-8" } }
       );
@@ -60,9 +61,9 @@ export default {
       try {
         const update = await request.json();
         if (update.message) {
-          await handleMessage(update.message, BOT_TOKEN, ADMIN_ID, REPO_URL, false);
+          await handleMessage(update.message, BOT_TOKEN, ADMIN_ID, REPO_URL, BLOCKLIST, false);
         } else if (update.edited_message) {
-          await handleMessage(update.edited_message, BOT_TOKEN, ADMIN_ID, REPO_URL, true);
+          await handleMessage(update.edited_message, BOT_TOKEN, ADMIN_ID, REPO_URL, BLOCKLIST, true);
         } else if (update.callback_query) {
           await handleCallback(update.callback_query, BOT_TOKEN, REPO_URL);
         }
@@ -73,7 +74,7 @@ export default {
     }
 
     return new Response(
-      `🤖 Open-Source Anonymous School Counselor Bot (v2.1) is running.\nSource Code: ${REPO_URL}`,
+      `🤖 Open-Source Anonymous School Counselor Bot (v2.2) is running.\nSource Code: ${REPO_URL}`,
       { headers: { "content-type": "text/plain; charset=utf-8" } }
     );
   },
@@ -135,6 +136,19 @@ async function decryptRoute(hexToken, secret) {
   return { chatId, msgId: msgId ? Number(msgId) : undefined };
 }
 
+// Extract the 6-character thread alias from either a command argument or a replied-to message
+function extractTargetAlias(msg, cmdText) {
+  const argMatch = cmdText.match(/^\/(?:un)?block\s+#?([0-9a-fA-F]{6})\b/i);
+  if (argMatch) return argMatch[1].toLowerCase();
+
+  if (msg.reply_to_message) {
+    const original = msg.reply_to_message.text || msg.reply_to_message.caption || "";
+    const threadMatch = original.match(/Thread:\s*#([0-9a-fA-F]{6})/i);
+    if (threadMatch) return threadMatch[1].toLowerCase();
+  }
+  return null;
+}
+
 async function tgApi(token, method, payload) {
   const res = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
     method: "POST",
@@ -165,19 +179,19 @@ async function handleCallback(cb, token, repoUrl) {
   }
 }
 
-async function handleMessage(msg, token, adminId, repoUrl, isEdit = false) {
+async function handleMessage(msg, token, adminId, repoUrl, blocklistKv, isEdit = false) {
   const senderId = String(msg.chat.id);
-  const text = msg.text || "";
+  const text = (msg.text || "").trim();
 
   // Handle /start and /source commands (ignore on edits)
   if (!isEdit && (text.startsWith("/start") || text.startsWith("/source"))) {
     const isAdmin = senderId === adminId;
     const welcomeText = isAdmin
-      ? "👋 <b>Counselor Admin Mode Active (v2.1)!</b>\n\n" +
-        "• Incoming student messages display a short thread alias (e.g., <code>#a4f9c2</code>).\n" +
-        "• <b>Swipe to reply</b> on any student message to deliver your answer directly to that specific message bubble.\n" +
-        "• If you edit a text reply, the updated version is automatically sent to the student.\n" +
-        "• Delivered replies get an automatic 👍 reaction."
+      ? "👋 <b>Counselor Admin Mode Active (v2.2)!</b>\n\n" +
+        "• <b>Reply:</b> Swipe to reply on any student message.\n" +
+        "• <b>Block / Mute:</b> Reply with <code>/block</code> or send <code>/block #a4f9c2</code>.\n" +
+        "• <b>Unblock:</b> Reply with <code>/unblock</code> or send <code>/unblock #a4f9c2</code>.\n" +
+        "• <b>View Blocked:</b> Send <code>/blocklist</code>."
       : "سلام! 👋 به <b>صندوق پیام ناشناس مشاور</b> خوش اومدی. 🌱\n\n" +
         "برخلاف صندوق‌های قدیمی توی راهروی مدرسه که زیر دوربینن و هیچ راهی هم برای جواب دادن ندارن، اینجا یه فضای کاملاً امن و دوطرفه‌ست!\n\n" +
         "هر دغدغه، سوال، درد دل یا پیشنهادی داری، می‌تونی همین‌جا به صورت <b>متن، عکس یا حتی ویس</b> بفرستی:\n" +
@@ -201,8 +215,67 @@ async function handleMessage(msg, token, adminId, repoUrl, isEdit = false) {
     return;
   }
 
-  // CASE A: Admin is replying (or editing a reply) to a student
+  // CASE A: Admin Actions & Replies
   if (senderId === adminId) {
+    // 1. Handle Admin Moderation Commands (/block, /unblock, /blocklist)
+    if (!isEdit && /^\/(block|unblock|blocklist)\b/i.test(text)) {
+      if (!blocklistKv) {
+        await tgApi(token, "sendMessage", {
+          chat_id: adminId,
+          text: "⚠️ <b>KV Binding Missing:</b>\nTo use blocking commands, open your Cloudflare Worker -> <b>Settings</b> -> <b>Bindings</b> -> Add a KV Namespace with the variable name <code>BLOCKLIST</code>.",
+          parse_mode: "HTML",
+        });
+        return;
+      }
+
+      if (/^\/blocklist\b/i.test(text)) {
+        const list = await blocklistKv.list({ prefix: "block:" });
+        const aliases = list.keys.map((k) => `• <code>#${k.name.replace("block:", "")}</code>`);
+        const listText =
+          aliases.length > 0
+            ? `🚫 <b>Blocked Thread Aliases (${aliases.length}):</b>\n\n${aliases.join("\n")}\n\n<i>Send /unblock #alias to unmute.</i>`
+            : "✅ <b>No threads are currently blocked.</b>";
+        await tgApi(token, "sendMessage", {
+          chat_id: adminId,
+          text: listText,
+          parse_mode: "HTML",
+        });
+        return;
+      }
+
+      const isUnblock = /^\/unblock\b/i.test(text);
+      const targetAlias = extractTargetAlias(msg, text);
+
+      if (!targetAlias) {
+        await tgApi(token, "sendMessage", {
+          chat_id: adminId,
+          text: `⚠️ Please <b>swipe to reply</b> on a student's message with <code>/${isUnblock ? "unblock" : "block"}</code>, or specify the thread alias (e.g., <code>/${isUnblock ? "unblock" : "block"} #a4f9c2</code>).`,
+          parse_mode: "HTML",
+        });
+        return;
+      }
+
+      if (isUnblock) {
+        await blocklistKv.delete(`block:${targetAlias}`);
+        await tgApi(token, "sendMessage", {
+          chat_id: adminId,
+          text: `✅ Thread <code>#${targetAlias}</code> has been <b>unblocked</b> and can message you again.`,
+          parse_mode: "HTML",
+          reply_to_message_id: msg.message_id,
+        });
+      } else {
+        await blocklistKv.put(`block:${targetAlias}`, "true");
+        await tgApi(token, "sendMessage", {
+          chat_id: adminId,
+          text: `🚫 Thread <code>#${targetAlias}</code> is now <b>shadowbanned</b>.\nFuture messages from this sender will be silently ignored without alerting them. Send <code>/unblock #${targetAlias}</code> anytime to undo.`,
+          parse_mode: "HTML",
+          reply_to_message_id: msg.message_id,
+        });
+      }
+      return;
+    }
+
+    // 2. Normal Admin Reply to a Student
     if (!msg.reply_to_message) {
       if (!isEdit) {
         await tgApi(token, "sendMessage", {
@@ -296,6 +369,25 @@ async function handleMessage(msg, token, adminId, repoUrl, isEdit = false) {
   }
 
   const alias = await getAnonAlias(senderId, token);
+
+  // Check if this anonymous alias is shadowbanned in KV
+  if (blocklistKv) {
+    const isBlocked = await blocklistKv.get(`block:${alias}`);
+    if (isBlocked) {
+      // Silently fake normal delivery so the troll does not switch accounts
+      const fakeConfirmation = isEdit
+        ? "✅ ویرایش پیامت برای مشاور ارسال شد. 🌱"
+        : "✅ پیامت به صورت کاملاً ناشناس به دست مشاور رسید.\nبه محض بررسی، جوابش رو همین‌جا دریافت می‌کنی. 🌱";
+      await tgApi(token, "sendMessage", {
+        chat_id: senderId,
+        text: fakeConfirmation,
+        parse_mode: "HTML",
+        reply_to_message_id: msg.message_id,
+      });
+      return;
+    }
+  }
+
   const encryptedRoute = await encryptRoute(senderId, msg.message_id, token);
   const mediaTag = msg.voice ? " [🎙️ Voice Note]" : "";
   const actionLabel = isEdit ? "✏️ Edited Anonymous Message" : "📩 New Anonymous Message";
@@ -305,14 +397,12 @@ async function handleMessage(msg, token, adminId, repoUrl, isEdit = false) {
   let adminResult;
 
   if (msg.text) {
-    // Truncate body safely to 3800 chars so header + body + [#RT_...] never exceeds 4096 chars
     const safeText = msg.text.length > 3800 ? msg.text.slice(0, 3800) + "…" : msg.text;
     adminResult = await tgApi(token, "sendMessage", {
       chat_id: adminId,
       text: `${header}\n\n${safeText}\n\n${footer}`,
     });
   } else if (msg.photo || msg.video || msg.voice || msg.audio || msg.document) {
-    // Truncate caption safely to 800 chars so [#RT_...] is NEVER sliced off by Telegram's 1024-char limit
     const safeCaption = msg.caption
       ? `\n\n${msg.caption.length > 800 ? msg.caption.slice(0, 800) + "…" : msg.caption}`
       : "";
@@ -336,7 +426,6 @@ async function handleMessage(msg, token, adminId, repoUrl, isEdit = false) {
     });
   }
 
-  // Only confirm delivery to the student if the message actually reached the Admin
   if (!adminResult || !adminResult.ok) {
     await tgApi(token, "sendMessage", {
       chat_id: senderId,
